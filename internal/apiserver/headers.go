@@ -65,11 +65,11 @@ func (w *secureHeaderResponseWriter) Unwrap() http.ResponseWriter {
 // Hijack marks the header as written so that ensureHeaderWritten does not
 // call WriteHeader after the connection has been taken over by the caller.
 func (w *secureHeaderResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	w.wroteHeader = true
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
 	}
+	w.wroteHeader = true
 	return hijacker.Hijack()
 }
 
@@ -107,18 +107,13 @@ func (w *secureHeaderResponseWriter) ensureHeaderWritten() {
 // A "public" directive (e.g. kube-openapi's hash-addressed, immutable OpenAPI
 // documents) is left untouched, since no-store/must-revalidate would
 // contradict deliberate, shared caching. Responses that carry an Etag (e.g.
-// kube-openapi's unhashed discovery documents) are left untouched too, since
-// no-store would defeat the conditional-request/304 mechanism they rely on.
+// kube-openapi's unhashed discovery documents) skip only no-store, since it
+// would defeat the conditional-request/304 mechanism they rely on; no-cache
+// and must-revalidate still drive that revalidation and are safe to add.
 func ensureSecureCacheControl(header http.Header) {
-	if header.Get(etag) != "" {
-		return
-	}
-
-	current := header.Get(cacheControl)
-
 	var directives []string
-	if current != "" {
-		for _, directive := range strings.Split(current, ",") {
+	for _, value := range header.Values(cacheControl) {
+		for _, directive := range strings.Split(value, ",") {
 			directives = append(directives, strings.TrimSpace(directive))
 		}
 	}
@@ -127,7 +122,11 @@ func ensureSecureCacheControl(header http.Header) {
 		return
 	}
 
+	hasEtag := header.Get(etag) != ""
 	for _, required := range requiredCacheControlDirectives {
+		if hasEtag && strings.EqualFold(required, "no-store") {
+			continue
+		}
 		if !slices.ContainsFunc(directives, func(d string) bool { return strings.EqualFold(d, required) }) {
 			directives = append(directives, required)
 		}

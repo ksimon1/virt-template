@@ -133,16 +133,53 @@ var _ = DescribeTable(
 		"Public, immutable",
 	),
 	Entry(
-		"leaves Cache-Control untouched on a response that carries an Etag but no explicit Cache-Control",
+		"adds no-cache and must-revalidate but not no-store to a response that carries an Etag",
 		func(w http.ResponseWriter) {
 			w.Header().Set(etag, `"abc123"`)
 			w.WriteHeader(http.StatusOK)
 		},
 		http.StatusOK,
 		"nosniff",
-		"",
+		"no-cache, must-revalidate",
+	),
+	Entry(
+		"still adds no-store to an Etag response that already opted into it",
+		func(w http.ResponseWriter) {
+			w.Header().Set(etag, `"abc123"`)
+			w.Header().Set(cacheControl, "no-store")
+			w.WriteHeader(http.StatusOK)
+		},
+		http.StatusOK,
+		"nosniff",
+		"no-store, no-cache, must-revalidate",
+	),
+	Entry(
+		"merges directives spread across multiple Cache-Control header values",
+		func(w http.ResponseWriter) {
+			w.Header().Add(cacheControl, "no-cache")
+			w.Header().Add(cacheControl, "private")
+			w.WriteHeader(http.StatusOK)
+		},
+		http.StatusOK,
+		"nosniff",
+		"no-cache, private, no-store, must-revalidate",
 	),
 )
+
+var _ = Describe("withSecureResponseHeaders", func() {
+	It("detects a public directive spread across multiple Cache-Control header values and leaves them untouched", func() {
+		handler := withSecureResponseHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Add(cacheControl, "public")
+			w.Header().Add(cacheControl, "immutable")
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+
+		Expect(recorder.Result().Header.Values(cacheControl)).To(ConsistOf("public", "immutable"))
+	})
+})
 
 // flushCloseNotifierWriter is an inner http.ResponseWriter that implements
 // http.Flusher and http.CloseNotifier so that WrapForHTTP1Or2 takes its
