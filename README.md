@@ -423,6 +423,29 @@ pinned in `tools/go.mod` and vendored in `tools/vendor/`. To upgrade a
 tool, update its version in `tools/go.mod` and run `make vendor` — the
 tool is rebuilt automatically on next use via `go tool`.
 
+### Dependency updates
+
+Renovate runs daily at 06:00 UTC and can also be started from the Actions tab.
+It proposes routine and security dependency updates on `main`. On
+`release-X.Y` branches, it proposes security updates only. The repository must
+have the `RENOVATE_APP_ID` and `RENOVATE_APP_PRIVATE_KEY` Actions secrets. The
+GitHub App needs `contents:write`, `pull-requests:write`, `issues:write`, and
+`workflows:write` permissions, plus `dependabot-alerts:read` for GitHub
+vulnerability alerts.
+
+On `main`, Go module updates follow the rules in `renovate.json`: indirect
+updates are enabled, digest/patch/minor updates are grouped, and direct major
+updates are grouped with import path rewrites. Major indirect updates and
+package families that currently require manual code changes are excluded.
+GitHub Actions and Dockerfile updates remain enabled.
+
+Each Renovate branch runs `make vendor`, `make fmt`, `make generate`,
+`make manifests`, then `make vendor` again before its PR is created. This keeps
+vendor files, generated client code, CRDs, RBAC, and webhooks in sync. A
+separate workflow comments on Renovate PRs that change a `go` or `toolchain`
+directive in a module or `go.work`; review those changes against the build and
+release toolchains before merging.
+
 **Kubevirtci workflows:**
 
 The project provides two kubevirtci-based development environments:
