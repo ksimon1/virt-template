@@ -433,6 +433,9 @@ GitHub App needs `contents:write`, `pull-requests:write`, `issues:write`, and
 `workflows:write` permissions, plus `dependabot-alerts:read` for GitHub
 vulnerability alerts.
 
+Routine update PRs are limited to three open PRs at a time. The hourly PR
+limit is disabled so security PRs cannot exhaust it before routine updates.
+
 On `main`, Go module updates follow the rules in `renovate.json`: indirect
 updates are enabled, digest/patch/minor updates are grouped, and direct major
 updates are grouped with import path rewrites. Major indirect updates and

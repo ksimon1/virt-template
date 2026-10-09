@@ -19,6 +19,10 @@
 
 set -e
 
+# Kubernetes code generators invoke gofmt as a separate executable.
+_go_bin_dir=$(go env GOROOT)/bin
+export PATH="${_go_bin_dir}:${PATH}"
+
 _base_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 _client_staging_dir="${_base_dir}/staging/src/kubevirt.io/virt-template-client-go"
 _out_dir="${_base_dir}/_out"
