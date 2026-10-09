@@ -35,19 +35,7 @@
       "description": "Disable updates for packages that currently require code changes",
       "matchManagers": ["gomod"],
       "matchPackageNames": [
-        "golang.org/x/{/,}**",
-        "google.golang.org/{/,}**",
-        "go.opentelemetry.io/{/,}**",
-        "github.com/onsi/ginkgo/{/,}**",
-        "github.com/go-openapi/{/,}**",
-        "github.com/grpc-ecosystem/{/,}**",
-        "github.com/prometheus/procfs{/,}**",
-        "go.etcd.io/etcd/{/,}**",
-        "k8s.io/{/,}**",
-        "kubevirt.io/{/,}**",
-        "sigs.k8s.io/{/,}**",
-        "github.com/openshift/{/,}**",
-        "github.com/prometheus-operator/{/,}**"
+        "k8s.io/{/,}**"
       ],
       "enabled": false
     },
