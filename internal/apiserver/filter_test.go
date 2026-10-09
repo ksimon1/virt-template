@@ -23,21 +23,37 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/emicklei/go-restful/v3"
+	apidiscoveryv2 "k8s.io/api/apidiscovery/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apiserver/pkg/endpoints"
+	discoveryendpoint "k8s.io/apiserver/pkg/endpoints/discovery/aggregated"
 	"k8s.io/apiserver/pkg/registry/rest"
+	genericapiserver "k8s.io/apiserver/pkg/server"
 )
 
 var _ = Describe("Filter", func() {
 	const (
-		v1alpha1                       = "v1alpha1"
-		virtualmachines                = "virtualmachines"
-		virtualmachinetemplates        = "virtualmachinetemplates"
-		virtualmachinetemplaterequests = "virtualmachinetemplaterequests"
+		v1alpha1                        = "v1alpha1"
+		v1                              = "v1"
+		create                          = "create"
+		virtualmachines                 = "virtualmachines"
+		virtualmachinetemplates         = "virtualmachinetemplates"
+		virtualmachinetemplaterequests  = "virtualmachinetemplaterequests"
+		processedVirtualMachineTemplate = "ProcessedVirtualMachineTemplate"
+		virtualmachinesProcess          = virtualmachines + "/process"
+		virtualmachinesCreate           = virtualmachines + "/" + create
+		virtualmachinetemplatesStatus   = virtualmachinetemplates + "/status"
+		virtualmachinetemplatesProcess  = virtualmachinetemplates + "/process"
+		virtualmachinetemplatesCreate   = virtualmachinetemplates + "/" + create
 	)
 
 	Context("getParentResourceNames", func() {
@@ -58,9 +74,9 @@ var _ = Describe("Filter", func() {
 
 		It("should extract parent resource from single subresource", func() {
 			resourcesStorage := map[string]rest.Storage{
-				virtualmachines:           nil,
-				"virtualmachines/process": nil,
-				virtualmachinetemplates:   nil,
+				virtualmachines:         nil,
+				virtualmachinesProcess:  nil,
+				virtualmachinetemplates: nil,
 			}
 			parents := getParentResourceNames(resourcesStorage)
 			Expect(parents).To(ConsistOf(virtualmachines))
@@ -68,11 +84,11 @@ var _ = Describe("Filter", func() {
 
 		It("should extract parent resources from multiple subresources", func() {
 			resourcesStorage := map[string]rest.Storage{
-				virtualmachines:                  nil,
-				"virtualmachines/process":        nil,
-				"virtualmachines/create":         nil,
-				virtualmachinetemplates:          nil,
-				"virtualmachinetemplates/status": nil,
+				virtualmachines:               nil,
+				virtualmachinesProcess:        nil,
+				virtualmachinesCreate:         nil,
+				virtualmachinetemplates:       nil,
+				virtualmachinetemplatesStatus: nil,
 			}
 			parents := getParentResourceNames(resourcesStorage)
 			Expect(parents).To(ConsistOf(virtualmachines, virtualmachinetemplates))
@@ -80,10 +96,10 @@ var _ = Describe("Filter", func() {
 
 		It("should deduplicate parents with multiple subresources", func() {
 			resourcesStorage := map[string]rest.Storage{
-				virtualmachines:           nil,
-				"virtualmachines/process": nil,
-				"virtualmachines/create":  nil,
-				"virtualmachines/status":  nil,
+				virtualmachines:          nil,
+				virtualmachinesProcess:   nil,
+				virtualmachinesCreate:    nil,
+				"virtualmachines/status": nil,
 			}
 			parents := getParentResourceNames(resourcesStorage)
 			Expect(parents).To(ConsistOf(virtualmachines))
@@ -109,10 +125,10 @@ var _ = Describe("Filter", func() {
 				GroupVersion: v1alpha1,
 				APIResources: []metav1.APIResource{
 					{Name: virtualmachines, Namespaced: true},
-					{Name: "virtualmachines/process", Namespaced: true},
-					{Name: "virtualmachines/create", Namespaced: true},
+					{Name: virtualmachinesProcess, Namespaced: true},
+					{Name: virtualmachinesCreate, Namespaced: true},
 					{Name: virtualmachinetemplates, Namespaced: true},
-					{Name: "virtualmachinetemplates/status", Namespaced: true},
+					{Name: virtualmachinetemplatesStatus, Namespaced: true},
 				},
 			}
 
@@ -138,7 +154,7 @@ var _ = Describe("Filter", func() {
 
 		It("should filter out multiple resources", func() {
 			lister := &filteringAPIResourceLister{
-				groupVersion:    "v1alpha1",
+				groupVersion:    v1alpha1,
 				originalHandler: originalHandler,
 				resourcesToHide: []string{virtualmachines, virtualmachinetemplates},
 			}
@@ -186,14 +202,15 @@ var _ = Describe("Filter", func() {
 
 		It("should return cached list on subsequent calls", func() {
 			lister := &filteringAPIResourceLister{
-				groupVersion:    "v1alpha1",
+				groupVersion:    v1alpha1,
 				originalHandler: originalHandler,
 				resourcesToHide: []string{virtualmachines},
 			}
 
 			resources1 := lister.ListAPIResources()
 
-			apiResourceList.APIResources = append(apiResourceList.APIResources,
+			apiResourceList.APIResources = append(
+				apiResourceList.APIResources,
 				metav1.APIResource{
 					Name: virtualmachinetemplaterequests,
 				},
@@ -274,6 +291,90 @@ var _ = Describe("Filter", func() {
 		})
 	})
 
+	Context("installFilteredAPIVersionHandler", func() {
+		const (
+			testGroup   = "subresources.template.kubevirt.io"
+			testVersion = "v1beta1"
+		)
+
+		var (
+			gv            schema.GroupVersion
+			container     *restful.Container
+			factory       runtime.NegotiatedSerializer
+			fakeDiscovery discoveryendpoint.FakeResourceManager
+			subresources  []metav1.APIResource
+		)
+
+		BeforeEach(func() {
+			gv = schema.GroupVersion{Group: testGroup, Version: testVersion}
+			container = restful.NewContainer()
+
+			subresources = []metav1.APIResource{
+				{Name: virtualmachinetemplatesProcess, Namespaced: true, Kind: processedVirtualMachineTemplate, Verbs: metav1.Verbs{create}},
+				{Name: virtualmachinetemplatesCreate, Namespaced: true, Kind: processedVirtualMachineTemplate, Verbs: metav1.Verbs{create}},
+			}
+			allResources := append([]metav1.APIResource{
+				{Name: virtualmachinetemplates, Namespaced: true, Kind: "VirtualMachineTemplate", Verbs: metav1.Verbs{"get", "list"}},
+			}, subresources...)
+
+			wsPath := path.Join(genericapiserver.APIGroupPrefix, gv.Group, gv.Version)
+			ws := new(restful.WebService).Path(wsPath)
+			ws.Route(ws.GET("/").To(func(_ *restful.Request, resp *restful.Response) {
+				resp.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(resp).Encode(metav1.APIResourceList{GroupVersion: gv.String(), APIResources: allResources})
+			}))
+			container.Add(ws)
+
+			scheme := runtime.NewScheme()
+			metav1.AddToGroupVersion(scheme, schema.GroupVersion{Version: v1})
+			factory = serializer.NewCodecFactory(scheme)
+			fakeDiscovery = discoveryendpoint.NewFakeResourceManager()
+		})
+
+		It("should filter parent from legacy and update aggregated discovery", func() {
+			expectedDiscoveryResources, err := endpoints.ConvertGroupVersionIntoToDiscovery(subresources)
+			Expect(err).ToNot(HaveOccurred())
+			fakeDiscovery.Expect().AddGroupVersion(gv.Group, apidiscoveryv2.APIVersionDiscovery{
+				Freshness: apidiscoveryv2.DiscoveryFreshnessCurrent,
+				Version:   gv.Version,
+				Resources: expectedDiscoveryResources,
+			})
+
+			Expect(installFilteredAPIVersionHandler(gv, []string{virtualmachinetemplates}, container, factory, fakeDiscovery)).To(Succeed())
+
+			wsPath := path.Join(genericapiserver.APIGroupPrefix, gv.Group, gv.Version) + "/"
+			req := httptest.NewRequest(http.MethodGet, wsPath, http.NoBody)
+			req.Header.Set("Accept", "application/json")
+			recorder := httptest.NewRecorder()
+			container.ServeHTTP(recorder, req)
+
+			var result metav1.APIResourceList
+			Expect(json.NewDecoder(recorder.Body).Decode(&result)).To(Succeed())
+			for _, r := range result.APIResources {
+				Expect(r.Name).ToNot(Equal(virtualmachinetemplates))
+			}
+
+			Expect(fakeDiscovery.Validate()).To(Succeed())
+		})
+
+		It("should return error when WebService not found", func() {
+			wrongGV := schema.GroupVersion{Group: "nonexistent.io", Version: v1}
+			err := installFilteredAPIVersionHandler(wrongGV, []string{virtualmachinetemplates}, container, factory, fakeDiscovery)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("could not find the APIResource WebService"))
+		})
+
+		It("should return error when route not found", func() {
+			emptyWs := new(restful.WebService).Path(path.Join(genericapiserver.APIGroupPrefix, gv.Group, gv.Version))
+			emptyContainer := restful.NewContainer()
+			emptyContainer.Add(emptyWs)
+
+			err := installFilteredAPIVersionHandler(gv, []string{virtualmachinetemplates}, emptyContainer, factory, fakeDiscovery)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("could not find the APIVersionHandler"))
+		})
+	})
+
 	Describe("get method", func() {
 		It("should parse APIResourceList from handler response", func() {
 			expectedResources := []metav1.APIResource{
@@ -284,7 +385,7 @@ var _ = Describe("Filter", func() {
 			handler := func(_ *restful.Request, resp *restful.Response) {
 				resp.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(resp).Encode(metav1.APIResourceList{
-					GroupVersion: "v1",
+					GroupVersion: v1,
 					APIResources: expectedResources,
 				})
 			}

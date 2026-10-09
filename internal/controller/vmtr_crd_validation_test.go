@@ -38,12 +38,17 @@ import (
 	"kubevirt.io/virt-template/internal/controller"
 )
 
+const (
+	testEmptyNSName = "test-empty-ns"
+	testEmptyVMName = "test-empty-name"
+)
+
 var _ = Describe("VirtualMachineTemplateRequest controller CRD validation", func() {
 	Context("through API server", func() {
 		It("should reject creation when VirtualMachineRef.Namespace is empty", func() {
 			tplReq := &v1beta1.VirtualMachineTemplateRequest{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-empty-ns",
+					Name:      testEmptyNSName,
 					Namespace: testNamespace,
 				},
 				Spec: v1beta1.VirtualMachineTemplateRequestSpec{
@@ -60,7 +65,7 @@ var _ = Describe("VirtualMachineTemplateRequest controller CRD validation", func
 		It("should reject creation when VirtualMachineRef.Name is empty", func() {
 			tplReq := &v1beta1.VirtualMachineTemplateRequest{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-empty-name",
+					Name:      testEmptyVMName,
 					Namespace: testNamespace,
 				},
 				Spec: v1beta1.VirtualMachineTemplateRequestSpec{
@@ -72,6 +77,46 @@ var _ = Describe("VirtualMachineTemplateRequest controller CRD validation", func
 			}
 			err := k8sClient.Create(context.Background(), tplReq)
 			Expect(err).To(MatchError(ContainSubstring("spec.virtualMachineRef.name: Required value")))
+		})
+
+		It("should reject templateLabels with reserved prefix", func() {
+			tplReq := &v1beta1.VirtualMachineTemplateRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-reserved-labels",
+					Namespace: testNamespace,
+				},
+				Spec: v1beta1.VirtualMachineTemplateRequestSpec{
+					VirtualMachineRef: v1beta1.VirtualMachineReference{
+						Namespace: testVMNamespace,
+						Name:      testVMName,
+					},
+					TemplateLabels: map[string]string{
+						"template.kubevirt.io/RequestUID": "malicious-value",
+					},
+				},
+			}
+			err := k8sClient.Create(context.Background(), tplReq)
+			Expect(err).To(MatchError(ContainSubstring("reserved for system use")))
+		})
+
+		It("should accept templateLabels without reserved prefix", func() {
+			tplReq := &v1beta1.VirtualMachineTemplateRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-valid-labels",
+					Namespace: testNamespace,
+				},
+				Spec: v1beta1.VirtualMachineTemplateRequestSpec{
+					VirtualMachineRef: v1beta1.VirtualMachineReference{
+						Namespace: testVMNamespace,
+						Name:      testVMName,
+					},
+					TemplateLabels: map[string]string{
+						labelOS:       labelOSLinux,
+						labelWorkload: labelWorkloadServer,
+					},
+				},
+			}
+			Expect(k8sClient.Create(context.Background(), tplReq)).To(Succeed())
 		})
 
 		It("should reject updates to spec", func() {
@@ -108,7 +153,7 @@ var _ = Describe("VirtualMachineTemplateRequest controller CRD validation", func
 		It("should fail request when VirtualMachineRef.Namespace is empty", func() {
 			tplReq := &v1beta1.VirtualMachineTemplateRequest{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-empty-ns",
+					Name:      testEmptyNSName,
 					Namespace: testNamespace,
 				},
 				Spec: v1beta1.VirtualMachineTemplateRequestSpec{
@@ -134,7 +179,7 @@ var _ = Describe("VirtualMachineTemplateRequest controller CRD validation", func
 		It("should fail request when VirtualMachineRef.Name is empty", func() {
 			tplReq := &v1beta1.VirtualMachineTemplateRequest{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-empty-name",
+					Name:      testEmptyVMName,
 					Namespace: testNamespace,
 				},
 				Spec: v1beta1.VirtualMachineTemplateRequestSpec{

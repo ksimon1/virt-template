@@ -57,6 +57,9 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 		testSecondaryIfaceName  = "secondary"
 		testSerial              = "source-serial-12345"
 		testUUID                = "source-uuid-abcde"
+
+		dataPVCName = "data-pvc"
+		efiPVCName  = "efi-pvc"
 	)
 
 	var reconciler *controller.VirtualMachineTemplateRequestReconciler
@@ -185,7 +188,7 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 
 		Expect(tpl.Labels).To(HaveKeyWithValue(v1beta1.LabelRequestUID, string(p.TplReq.UID)))
 		Expect(tpl.Spec.Parameters).To(ContainElement(
-			v1beta1.Parameter{Name: paramNameName, Required: true},
+			v1beta1.Parameter{Name: paramNameName, Required: true, Generate: "expression", From: "vm-[a-z0-9]{5}"},
 		))
 
 		vm := decodeVM(tpl.Spec.VirtualMachine.Raw)
@@ -397,7 +400,7 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 	})
 
 	It("should strip MAC addresses from interfaces", func() {
-		vm := reconcileWithModifiedContent(k8sClient, reconciler, func(snapContent *snapshotv1beta1.VirtualMachineSnapshotContent) {
+		_, vm := reconcileWithModifiedContent(k8sClient, reconciler, func(snapContent *snapshotv1beta1.VirtualMachineSnapshotContent) {
 			snapContent.Spec.Source.VirtualMachine.Spec.Template.Spec.Domain.Devices.Interfaces = []virtv1.Interface{
 				{Name: testIfaceName, MacAddress: testMACAddress},
 				{Name: testSecondaryIfaceName, MacAddress: testSecondaryMACAddress},
@@ -411,7 +414,7 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 	})
 
 	It("should strip firmware serial", func() {
-		vm := reconcileWithModifiedContent(k8sClient, reconciler, func(snapContent *snapshotv1beta1.VirtualMachineSnapshotContent) {
+		_, vm := reconcileWithModifiedContent(k8sClient, reconciler, func(snapContent *snapshotv1beta1.VirtualMachineSnapshotContent) {
 			snapContent.Spec.Source.VirtualMachine.Spec.Template.Spec.Domain.Firmware = &virtv1.Firmware{
 				Serial: testSerial,
 			}
@@ -421,7 +424,7 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 	})
 
 	It("should strip firmware UUID", func() {
-		vm := reconcileWithModifiedContent(k8sClient, reconciler, func(snapContent *snapshotv1beta1.VirtualMachineSnapshotContent) {
+		_, vm := reconcileWithModifiedContent(k8sClient, reconciler, func(snapContent *snapshotv1beta1.VirtualMachineSnapshotContent) {
 			snapContent.Spec.Source.VirtualMachine.Spec.Template.Spec.Domain.Firmware = &virtv1.Firmware{
 				UUID: testUUID,
 			}
@@ -494,6 +497,71 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 		expectCondition(tplReq, v1beta1.ConditionProgressing, metav1.ConditionFalse, v1beta1.ReasonReconciled)
 	})
 
+	It("should apply templateLabels to created VirtualMachineTemplate", func() {
+		tplReq := &v1beta1.VirtualMachineTemplateRequest{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-labels",
+				Namespace: testNamespace,
+			},
+			Spec: v1beta1.VirtualMachineTemplateRequestSpec{
+				VirtualMachineRef: v1beta1.VirtualMachineReference{
+					Namespace: testVMNamespace,
+					Name:      testVMName,
+				},
+				TemplateLabels: map[string]string{
+					labelOS:        labelOSLinux,
+					labelWorkload:  labelWorkloadServer,
+					"custom-label": "custom-value",
+				},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), tplReq)).To(Succeed())
+		snap := createSnapshot(k8sClient, tplReq)
+		snap = setSnapshotStatus(k8sClient, snap, withPhase(snapshotv1beta1.Succeeded), withReady())
+		snapContent := createSnapshotContent(k8sClient, snap)
+		setSnapshotContentStatus(k8sClient, snapContent, true)
+		dv := createDataVolume(k8sClient, tplReq)
+		setDataVolumeStatus(k8sClient, dv, cdiv1beta1.Succeeded, true, false)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(tplReq),
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		tpl := &v1beta1.VirtualMachineTemplate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      tplReq.Name,
+				Namespace: tplReq.Namespace,
+			},
+		}
+		Expect(k8sClient.Get(context.Background(), client.ObjectKeyFromObject(tpl), tpl)).To(Succeed())
+
+		Expect(tpl.Labels).To(HaveKeyWithValue(labelOS, labelOSLinux))
+		Expect(tpl.Labels).To(HaveKeyWithValue(labelWorkload, labelWorkloadServer))
+		Expect(tpl.Labels).To(HaveKeyWithValue("custom-label", "custom-value"))
+		Expect(tpl.Labels).To(HaveKeyWithValue(v1beta1.LabelRequestUID, string(tplReq.UID)))
+	})
+
+	It("should create VirtualMachineTemplate without additional labels when templateLabels is empty", func() {
+		p := setupTestPipeline(k8sClient, testNamespace, testVMNamespace)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(p.TplReq),
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		tpl := &v1beta1.VirtualMachineTemplate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      p.TplReq.Name,
+				Namespace: p.TplReq.Namespace,
+			},
+		}
+		Expect(k8sClient.Get(context.Background(), client.ObjectKeyFromObject(tpl), tpl)).To(Succeed())
+
+		Expect(tpl.Labels).To(HaveKey(v1beta1.LabelRequestUID))
+		Expect(tpl.Labels).To(HaveLen(1))
+	})
+
 	It("should skip backend storage PVC when creating template", func() {
 		const (
 			backendStorageVolumeName = "persistent-state-for-test-vm"
@@ -511,7 +579,7 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 				VolumeSource: virtv1.VolumeSource{
 					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
 						PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "data-pvc",
+							ClaimName: dataPVCName,
 						},
 					},
 				},
@@ -521,7 +589,7 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 				VolumeSource: virtv1.VolumeSource{
 					PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
 						PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: "efi-pvc",
+							ClaimName: efiPVCName,
 						},
 					},
 				},
@@ -531,14 +599,14 @@ var _ = Describe("VirtualMachineTemplateRequest Controller VirtualMachineTemplat
 			{
 				VolumeName: regularVolumeName,
 				PersistentVolumeClaim: snapshotv1beta1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{Name: "data-pvc"},
+					ObjectMeta: metav1.ObjectMeta{Name: dataPVCName},
 				},
 				VolumeSnapshotName: ptr.To("data-snapshot"),
 			},
 			{
 				VolumeName: backendStorageVolumeName,
 				PersistentVolumeClaim: snapshotv1beta1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{Name: "efi-pvc"},
+					ObjectMeta: metav1.ObjectMeta{Name: efiPVCName},
 				},
 				VolumeSnapshotName: ptr.To("efi-snapshot"),
 			},
@@ -604,7 +672,7 @@ func setupTestPipeline(cli client.Client, testNamespace, testVMNamespace string)
 func reconcileWithModifiedContent(
 	cli client.Client, reconciler *controller.VirtualMachineTemplateRequestReconciler,
 	modify func(*snapshotv1beta1.VirtualMachineSnapshotContent),
-) *virtv1.VirtualMachine {
+) (*v1beta1.VirtualMachineTemplate, *virtv1.VirtualMachine) {
 	tplReq := createRequest(cli, testNamespace, testVMNamespace)
 	snap := createSnapshot(cli, tplReq)
 	snap = setSnapshotStatus(cli, snap, withPhase(snapshotv1beta1.Succeeded), withReady())
@@ -622,7 +690,7 @@ func reconcileWithModifiedContent(
 
 	tpl := &v1beta1.VirtualMachineTemplate{}
 	ExpectWithOffset(1, cli.Get(context.Background(), client.ObjectKeyFromObject(tplReq), tpl)).To(Succeed())
-	return decodeVM(tpl.Spec.VirtualMachine.Raw)
+	return tpl, decodeVM(tpl.Spec.VirtualMachine.Raw)
 }
 
 func decodeVM(raw []byte) *virtv1.VirtualMachine {

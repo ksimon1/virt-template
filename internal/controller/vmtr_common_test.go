@@ -45,29 +45,39 @@ import (
 // This file contains common constants and helpers shared among the vmtr_*_test.go files.
 
 const (
-	testVMName       = "test-vm"
-	testVolumeName   = "test-volume"
-	testDVName       = "test-dv"
-	testSnapshotName = "test-volume-snapshot"
-	testClaimName    = "test-claim"
-	wrongUID         = "wrong-uid"
+	testVMName          = "test-vm"
+	testVolumeName      = "test-volume"
+	testDVName          = "test-dv"
+	testSnapshotName    = "test-volume-snapshot"
+	testClaimName       = "test-claim"
+	wrongUID            = "wrong-uid"
+	testRequestPrefix   = "test-request-"
+	labelOS             = "example.com/os"
+	labelWorkload       = "example.com/workload"
+	labelOSLinux        = "linux"
+	labelWorkloadServer = "server"
 )
 
 type fakeKubevirtClient struct {
 	kubecli.KubevirtClient
-	err error
+	err    error
+	called *bool
 }
 
 type fakeExpandSpecInterface struct {
 	kubecli.ExpandSpecInterface
-	err error
+	err    error
+	called *bool
 }
 
 func (f *fakeKubevirtClient) ExpandSpec(_ string) kubecli.ExpandSpecInterface {
-	return &fakeExpandSpecInterface{err: f.err}
+	return &fakeExpandSpecInterface{err: f.err, called: f.called}
 }
 
 func (f *fakeExpandSpecInterface) ForVirtualMachine(vm *virtv1.VirtualMachine) (*virtv1.VirtualMachine, error) {
+	if f.called != nil {
+		*f.called = true
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -77,7 +87,7 @@ func (f *fakeExpandSpecInterface) ForVirtualMachine(vm *virtv1.VirtualMachine) (
 func createRequest(cli client.Client, testNamespace, testVMNamespace string) *v1beta1.VirtualMachineTemplateRequest {
 	tplReq := &v1beta1.VirtualMachineTemplateRequest{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "test-request-",
+			GenerateName: testRequestPrefix,
 			Namespace:    testNamespace,
 		},
 		Spec: v1beta1.VirtualMachineTemplateRequestSpec{
@@ -328,14 +338,23 @@ func expectCondition(
 	conditionType string, status metav1.ConditionStatus, reason string,
 	messageMatchers ...gomegatypes.GomegaMatcher,
 ) {
+	gExpectCondition(Default, tplReq, conditionType, status, reason, messageMatchers...)
+}
+
+func gExpectCondition(
+	g Gomega,
+	tplReq *v1beta1.VirtualMachineTemplateRequest,
+	conditionType string, status metav1.ConditionStatus, reason string,
+	messageMatchers ...gomegatypes.GomegaMatcher,
+) {
 	cond := meta.FindStatusCondition(tplReq.Status.Conditions, conditionType)
-	ExpectWithOffset(1, cond).ToNot(BeNil())
+	g.ExpectWithOffset(1, cond).ToNot(BeNil())
 	// Satisfy linters, but already ensured above
 	if cond != nil {
-		ExpectWithOffset(1, cond.Status).To(Equal(status))
-		ExpectWithOffset(1, cond.Reason).To(Equal(reason))
+		g.ExpectWithOffset(1, cond.Status).To(Equal(status))
+		g.ExpectWithOffset(1, cond.Reason).To(Equal(reason))
 		for _, matcher := range messageMatchers {
-			ExpectWithOffset(1, cond.Message).To(matcher)
+			g.ExpectWithOffset(1, cond.Message).To(matcher)
 		}
 	}
 }

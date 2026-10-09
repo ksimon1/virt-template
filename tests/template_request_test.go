@@ -46,8 +46,13 @@ import (
 )
 
 const (
-	sourceSerial = "cf5d0f13-7075-48fe-a8e6-108f74e13633"
-	sourceUUID   = "354b1c05-8b0e-446c-8a0d-43d897f96c25"
+	sourceSerial           = "cf5d0f13-7075-48fe-a8e6-108f74e13633"
+	sourceUUID             = "354b1c05-8b0e-446c-8a0d-43d897f96c25"
+	vmParamNameKey         = "NAME"
+	vmParamInstancetypeKey = "INSTANCETYPE"
+	defaultNetworkName     = "default"
+	testInstancetype       = "u1.small"
+	testPreference         = "fedora"
 )
 
 var macSeq atomic.Uint32
@@ -75,6 +80,10 @@ var _ = Describe("VirtualMachineTemplateRequest", func() {
 					Namespace: vm.Namespace,
 					Name:      vm.Name,
 				},
+				TemplateLabels: map[string]string{
+					"example.com/os":       "linux",
+					"example.com/workload": "server",
+				},
 			},
 		}
 
@@ -88,6 +97,10 @@ var _ = Describe("VirtualMachineTemplateRequest", func() {
 			Get(context.Background(), tplReq.Status.TemplateRef.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
+		Expect(tpl.Labels).To(HaveKeyWithValue("example.com/os", "linux"))
+		Expect(tpl.Labels).To(HaveKeyWithValue("example.com/workload", "server"))
+		Expect(tpl.Labels).To(HaveKeyWithValue(v1beta1.LabelRequestUID, string(tplReq.UID)))
+
 		tplVM := decodeFunctestVM(tpl.Spec.VirtualMachine.Raw)
 		for _, iface := range tplVM.Spec.Template.Spec.Domain.Devices.Interfaces {
 			Expect(iface.MacAddress).To(BeEmpty(), "MAC address should be stripped from interface %s", iface.Name)
@@ -97,17 +110,30 @@ var _ = Describe("VirtualMachineTemplateRequest", func() {
 			Expect(tplVM.Spec.Template.Spec.Domain.Firmware.UUID).To(BeEmpty(), "firmware UUID should be stripped")
 		}
 
+		Expect(tplVM.Spec.Instancetype).ToNot(BeNil(), "instancetype reference should be kept")
+		Expect(tplVM.Spec.Instancetype.Name).To(Equal("${INSTANCETYPE}"), "instancetype name should be parameterized")
+		Expect(tpl.Spec.Parameters).To(ContainElement(
+			v1beta1.Parameter{Name: vmParamInstancetypeKey, Value: testInstancetype},
+		), "template should have an INSTANCETYPE parameter with the original name as default")
+		Expect(tplVM.Spec.Preference).ToNot(BeNil(), "preference reference should be kept")
+		Expect(tplVM.Spec.Preference.Name).To(Equal(testPreference), "preference name should be kept as-is")
+
+		instancetypeName := "u1.medium"
 		name := "my-created-vm-" + rand.String(5)
 		processedVM, err := tplClient.TemplateV1beta1().VirtualMachineTemplates(NamespaceTest).CreateVirtualMachine(
 			context.Background(), tpl.Name,
 			subresourcesv1beta1.ProcessOptions{
 				Parameters: map[string]string{
-					"NAME": name,
+					vmParamNameKey:         name,
+					vmParamInstancetypeKey: instancetypeName,
 				},
 			},
 		)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(processedVM.VirtualMachine.Name).To(Equal(name))
+		Expect(processedVM.VirtualMachine.Spec.Instancetype).ToNot(BeNil())
+		Expect(processedVM.VirtualMachine.Spec.Instancetype.Name).To(Equal(instancetypeName),
+			"processed VM should use the overridden instancetype name")
 
 		var createdVM *virtv1.VirtualMachine
 		Eventually(func(g Gomega) {
@@ -130,7 +156,8 @@ var _ = Describe("VirtualMachineTemplateRequest", func() {
 
 	It("should create a VirtualMachineTemplate from a VM with backend storage", func() {
 		vm, err := virtClient.VirtualMachine(NamespaceSecondaryTest).Create(
-			context.Background(), newVMWithPersistentEFI(), metav1.CreateOptions{})
+			context.Background(), newVMWithPersistentEFI(), metav1.CreateOptions{},
+		)
 		Expect(err).ToNot(HaveOccurred())
 
 		Eventually(func(g Gomega) {
@@ -173,7 +200,7 @@ var _ = Describe("VirtualMachineTemplateRequest", func() {
 			context.Background(), tpl.Name,
 			subresourcesv1beta1.ProcessOptions{
 				Parameters: map[string]string{
-					"NAME": name,
+					vmParamNameKey: name,
 				},
 			},
 		)
@@ -182,7 +209,8 @@ var _ = Describe("VirtualMachineTemplateRequest", func() {
 
 		Eventually(func(g Gomega) {
 			newVM, err := virtClient.VirtualMachine(NamespaceTest).Get(
-				context.Background(), processedResult.VirtualMachine.Name, metav1.GetOptions{})
+				context.Background(), processedResult.VirtualMachine.Name, metav1.GetOptions{},
+			)
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(newVM.Status.Ready).To(BeTrue())
 		}, 5*time.Minute, 1*time.Second).Should(Succeed())
@@ -237,10 +265,10 @@ func newVM() *virtv1.VirtualMachine {
 				},
 			},
 			Instancetype: &virtv1.InstancetypeMatcher{
-				Name: "u1.small",
+				Name: testInstancetype,
 			},
 			Preference: &virtv1.PreferenceMatcher{
-				Name: "fedora",
+				Name: testPreference,
 			},
 			RunStrategy: ptr.To(virtv1.RunStrategyAlways),
 			Template: &virtv1.VirtualMachineInstanceTemplateSpec{
@@ -249,7 +277,7 @@ func newVM() *virtv1.VirtualMachine {
 						Devices: virtv1.Devices{
 							Interfaces: []virtv1.Interface{
 								{
-									Name:       "default",
+									Name:       defaultNetworkName,
 									MacAddress: nextSourceMACAddress(),
 									InterfaceBindingMethod: virtv1.InterfaceBindingMethod{
 										Masquerade: &virtv1.InterfaceMasquerade{},
@@ -264,7 +292,7 @@ func newVM() *virtv1.VirtualMachine {
 					},
 					Networks: []virtv1.Network{
 						{
-							Name:          "default",
+							Name:          defaultNetworkName,
 							NetworkSource: virtv1.NetworkSource{Pod: &virtv1.PodNetwork{}},
 						},
 					},

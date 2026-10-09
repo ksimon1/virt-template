@@ -287,20 +287,40 @@ a golden image scenario where you want to convert an existing `VirtualMachine`
 into a reusable template.
 
 ```yaml
-apiVersion: template.kubevirt.io/v1alpha1
+apiVersion: template.kubevirt.io/v1beta1
 kind: VirtualMachineTemplateRequest
 metadata:
   name: my-template-request
 spec:
   templateName: my-template        # Optional: name for the created template
+  ttlSecondsAfterFinished: 3600    # Optional: auto-delete after 1 hour
   virtualMachineRef:
     namespace: my-vm-namespace     # Namespace of the source VM
     name: my-vm                    # Name of the source VM
+  templateLabels:                  # Optional: labels to apply to the created template
+    example.com/os: linux
+    example.com/workload: server
 ```
 
 Once created, the controller will generate a `VirtualMachineTemplate` based on
 the referenced `VirtualMachine` in the namespace of the
 `VirtualMachineTemplateRequest`.
+
+The optional `ttlSecondsAfterFinished` field limits the lifetime of a
+successfully completed request. After the specified number of seconds the request
+is automatically deleted. Failed requests are never cleaned up by the TTL
+controller so they remain available for debugging. If unset, the request is not
+automatically deleted.
+
+#### Template Labels
+
+The `templateLabels` field (available in v1beta1) allows you to apply custom
+labels to the created `VirtualMachineTemplate`. This is useful for organizing
+templates, adding metadata, or enabling label-based queries and filtering.
+
+**Note**: Labels with the prefix `template.kubevirt.io/` are reserved for
+system use. Any such labels specified in `templateLabels` will be rejected and
+filtered out, and the system-managed values will be used instead.
 
 #### Authorization
 
@@ -343,6 +363,27 @@ kubectl wait vmt my-template --for=condition=Ready
 The created template can then be processed like any other
 `VirtualMachineTemplate`.
 
+### Template Subresources
+
+The `virtualmachinetemplate-admin-role` and `virtualmachinetemplate-editor-role`
+ClusterRoles grant `create` on `virtualmachinetemplates/process` and
+`virtualmachinetemplates/create` (API group
+`subresources.template.kubevirt.io`). The `/process` subresource dry-runs
+template processing and does not persist a VirtualMachine. The `/create`
+subresource processes the template and creates a VirtualMachine in the
+namespace.
+
+Authorization for these endpoints uses the subresource `create` verb. The
+VirtualMachine is created by the virt-template apiserver service account, so
+callers do not need direct `kubevirt.io/virtualmachines` `create` permission.
+Granting `/create` therefore allows users to create VMs via templates even when
+direct VM create RBAC is withheld. In default KubeVirt configurations the
+aggregated `admin` and `edit` roles already include VM management permissions;
+this distinction matters mainly when defining custom roles.
+
+The `virtualmachinetemplate-viewer-role` grants `/process` only (dry-run), not
+`/create`.
+
 ## Distribution
 
 ### Build Installer Bundle
@@ -376,6 +417,34 @@ kubectl apply -f dist/install-openshift.yaml
 ## Development Tools
 
 Run `make help` to see all available make targets.
+
+Build tool versions (controller-gen, golangci-lint, gofumpt, etc.) are
+pinned in `tools/go.mod` and vendored in `tools/vendor/`. To upgrade a
+tool, update its version in `tools/go.mod` and run `make vendor` — the
+tool is rebuilt automatically on next use via `go tool`.
+
+### Dependency updates
+
+Renovate runs daily at 06:00 UTC and can also be started from the Actions tab.
+It proposes routine and security dependency updates on `main`. On
+`release-X.Y` branches, it proposes security updates only. The repository must
+have the `RENOVATE_APP_ID` and `RENOVATE_APP_PRIVATE_KEY` Actions secrets. The
+GitHub App needs `contents:write`, `pull-requests:write`, `issues:write`, and
+`workflows:write` permissions, plus `dependabot-alerts:read` for GitHub
+vulnerability alerts.
+
+On `main`, Go module updates follow the rules in `renovate.json`: indirect
+updates are enabled, digest/patch/minor updates are grouped, and direct major
+updates are grouped with import path rewrites. Major indirect updates and
+package families that currently require manual code changes are excluded.
+GitHub Actions and Dockerfile updates remain enabled.
+
+Each Renovate branch runs `make vendor`, `make fmt`, `make generate`,
+`make manifests`, then `make vendor` again before its PR is created. This keeps
+vendor files, generated client code, CRDs, RBAC, and webhooks in sync. A
+separate workflow comments on Renovate PRs that change a `go` or `toolchain`
+directive in a module or `go.work`; review those changes against the build and
+release toolchains before merging.
 
 **Kubevirtci workflows:**
 

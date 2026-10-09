@@ -77,10 +77,12 @@ func (a *apiserver) Run(
 	config.OpenAPIConfig = openAPIConfig
 	config.OpenAPIV3Config = openapiV3Config
 
-	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
+	a.authzOpts.AlwaysAllowPaths = append(
+		a.authzOpts.AlwaysAllowPaths,
 		"/", genericapiserver.APIGroupPrefix, "/openapi/v2", "/openapi/v3", "/openapi/v3/*",
 	)
-	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
+	a.authzOpts.AlwaysAllowPaths = append(
+		a.authzOpts.AlwaysAllowPaths,
 		getAdditionalAlwaysAllowPaths(apiGroups)...,
 	)
 
@@ -113,7 +115,9 @@ func (a *apiserver) Run(
 		resourcesToHide := getParentResourceNames(resourcesStorage)
 		if len(resourcesToHide) > 0 {
 			klog.Infof("Hiding parent resources from APIResourceList: %v", resourcesToHide)
-			if err := installFilteredAPIVersionHandler(gv, resourcesToHide, server.Handler.GoRestfulContainer, factory); err != nil {
+			if err := installFilteredAPIVersionHandler(
+				gv, resourcesToHide, server.Handler.GoRestfulContainer, factory, server.AggregatedDiscoveryGroupManager,
+			); err != nil {
 				return err
 			}
 		}
@@ -134,7 +138,8 @@ func (a *apiserver) Run(
 func getAdditionalAlwaysAllowPaths(apiGroups APIGroups) []string {
 	var additionalAlwaysAllowPaths []string
 	for gv := range apiGroups {
-		additionalAlwaysAllowPaths = append(additionalAlwaysAllowPaths,
+		additionalAlwaysAllowPaths = append(
+			additionalAlwaysAllowPaths,
 			genericapiserver.APIGroupPrefix+"/"+gv.Group,
 			genericapiserver.APIGroupPrefix+"/"+gv.String(),
 		)
